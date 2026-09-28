@@ -1,14 +1,24 @@
 """XSOAR API authentication.
 
-XSOAR's "Standard" API key type is just two static headers - no token exchange, no refresh, no
-expiry to manage. ("Advanced" key type adds a nonce+timestamp HMAC per request to guard against
-replay; this module only supports Standard for now - see README for how to add Advanced support
-if your org requires it.)
+Two key types exist, selected when you generate the key in the tenant UI:
+
+- **Standard**: a static "Authorization: {api_key}" header. Simple, no per-request computation.
+- **Advanced**: guards against replay by requiring a fresh nonce and timestamp on every request,
+  with "Authorization" set to sha256(api_key + nonce + timestamp) instead of the raw key. Since
+  those values must be fresh per call (not fixed once on the client), this is implemented as an
+  httpx2.Auth subclass rather than static client headers.
+
+Set XSOAR_API_KEY_TYPE=standard|advanced to pick. Defaults to advanced, since that's the type
+Palo Alto's own docs frame as the recommended default and a 401 against a set of static
+Standard-style headers is the most likely reason to end up reading this file's diff.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
+import time
 
 import httpx2
 
@@ -27,6 +37,35 @@ def _resolve_base_url(fqdn: str) -> str:
     return base if base.endswith(XSOAR_API_BASE_PATH) else base + XSOAR_API_BASE_PATH
 
 
+class AdvancedKeyAuth(httpx2.Auth):
+    """Computes a fresh nonce + timestamp + sha256 signature on every request."""
+
+    def __init__(self, api_key: str, api_key_id: str) -> None:
+        self._api_key = api_key
+        self._api_key_id = api_key_id
+
+    def _sign(self) -> dict[str, str]:
+        nonce = secrets.token_hex(32)  # 64 hex chars, matches Palo Alto's documented length
+        timestamp = str(int(time.time() * 1000))  # current UTC time in milliseconds
+        signature = hashlib.sha256(
+            f"{self._api_key}{nonce}{timestamp}".encode("utf-8")
+        ).hexdigest()
+        return {
+            "x-xdr-auth-id": self._api_key_id,
+            "x-xdr-nonce": nonce,
+            "x-xdr-timestamp": timestamp,
+            "Authorization": signature,
+        }
+
+    def sync_auth_flow(self, request: httpx2.Request):
+        request.headers.update(self._sign())
+        yield request
+
+    async def async_auth_flow(self, request: httpx2.Request):
+        request.headers.update(self._sign())
+        yield request
+
+
 def build_http_client() -> httpx2.AsyncClient:
     """Build the authenticated httpx client FastMCP will use to call the XSOAR API."""
     try:
@@ -39,11 +78,23 @@ def build_http_client() -> httpx2.AsyncClient:
             "Copy .env.example to .env and fill in your XSOAR API key, key ID, and tenant FQDN."
         ) from exc
 
-    return httpx2.AsyncClient(
-        base_url=_resolve_base_url(fqdn),
-        headers={
-            "Authorization": api_key,
-            "x-xdr-auth-id": api_key_id,
-        },
-        timeout=90.0,
-    )
+    key_type = os.environ.get("XSOAR_API_KEY_TYPE", "advanced").strip().lower()
+    base_url = _resolve_base_url(fqdn)
+
+    if key_type == "advanced":
+        return httpx2.AsyncClient(
+            base_url=base_url,
+            auth=AdvancedKeyAuth(api_key, api_key_id),
+            timeout=90.0,
+        )
+    elif key_type == "standard":
+        return httpx2.AsyncClient(
+            base_url=base_url,
+            headers={"Authorization": api_key, "x-xdr-auth-id": api_key_id},
+            timeout=90.0,
+        )
+    else:
+        raise RuntimeError(
+            f"XSOAR_API_KEY_TYPE={key_type!r} is not valid - use 'standard' or 'advanced' "
+            "(matching whichever type you picked when generating the key)."
+        )

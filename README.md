@@ -60,15 +60,19 @@ integrationUpload, uploadContentPacks, saveWidget, importWidget, deleteWidget
 
 Generate an API key in your tenant: **Settings → Integrations → API Keys**. You need:
 
-| Value | Where it's used |
-| --- | --- |
-| **API Key** | `Authorization` header |
-| **API Key ID** | `x-xdr-auth-id` header |
-| **FQDN** | Base URL: `https://api-{fqdn}/xsoar/public/v1` |
+| Value | Env var | Where it's used |
+| --- | --- | --- |
+| **API Key** | `XSOAR_API_KEY` | `Authorization` header (or the signature input, for Advanced) |
+| **API Key ID** | `XSOAR_API_KEY_ID` | `x-xdr-auth-id` header |
+| **FQDN** | `XSOAR_FQDN` | Base URL: `https://api-{fqdn}/xsoar/public/v1` (a full URL also works — `auth.py` normalizes either form) |
 
-Two key types exist: **Standard** (static, what this project supports) and **Advanced** (adds a
-per-request nonce+timestamp HMAC to guard against replay). If your org requires Advanced keys,
-`auth.py` needs extending to compute that signature — it currently only supports Standard.
+Two key types exist, picked when you generate the key: **Standard** (static header, the raw key)
+and **Advanced** (guards against replay — every request carries a fresh nonce + timestamp, and
+`Authorization` is `sha256(api_key + nonce + timestamp)` instead of the raw key). Both are
+supported; set `XSOAR_API_KEY_TYPE=standard` or `advanced` to match what you generated (defaults
+to `advanced`). Getting this wrong produces a `401 Unauthorized` with no further detail from the
+server, since a validly-formed request with the wrong signing scheme just fails auth like any
+other bad credential.
 
 ## Setup (for developing/regenerating the spec)
 
@@ -124,7 +128,8 @@ automatically — `XSOAR_FQDN`/`XSOAR_API_KEY`/`XSOAR_API_KEY_ID` have to be pas
 claude mcp add --scope user xsoar xsoar-mcp \
   -e XSOAR_FQDN=<your-tenant-fqdn> \
   -e XSOAR_API_KEY=<your-api-key> \
-  -e XSOAR_API_KEY_ID=<your-api-key-id>
+  -e XSOAR_API_KEY_ID=<your-api-key-id> \
+  -e XSOAR_API_KEY_TYPE=<standard-or-advanced>
 ```
 
 No `--directory` and no path to this repo anywhere in that command — it only works once
