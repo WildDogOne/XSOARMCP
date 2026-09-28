@@ -15,6 +15,18 @@ import httpx2
 XSOAR_API_BASE_PATH = "/xsoar/public/v1"
 
 
+def _resolve_base_url(fqdn: str) -> str:
+    """Accept either a bare FQDN ("zhaw.crtx.ch.paloaltonetworks.com") or a full URL a user
+    copy-pasted from their tenant's console ("https://api-zhaw.crtx.ch.paloaltonetworks.com") -
+    the latter is an easy mistake since "FQDN" is ambiguous once you're staring at a URL bar, and
+    silently mis-building the base URL from it produces a malformed request that's hard to
+    diagnose from the resulting error alone (a proxy or the server just rejects it outright).
+    """
+    fqdn = fqdn.strip().rstrip("/")
+    base = fqdn if fqdn.startswith(("http://", "https://")) else f"https://api-{fqdn}"
+    return base if base.endswith(XSOAR_API_BASE_PATH) else base + XSOAR_API_BASE_PATH
+
+
 def build_http_client() -> httpx2.AsyncClient:
     """Build the authenticated httpx client FastMCP will use to call the XSOAR API."""
     try:
@@ -28,7 +40,7 @@ def build_http_client() -> httpx2.AsyncClient:
         ) from exc
 
     return httpx2.AsyncClient(
-        base_url=f"https://api-{fqdn}{XSOAR_API_BASE_PATH}",
+        base_url=_resolve_base_url(fqdn),
         headers={
             "Authorization": api_key,
             "x-xdr-auth-id": api_key_id,
