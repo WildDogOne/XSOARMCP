@@ -25,11 +25,40 @@ prefixed base URL, so this should work as-is, but it hasn't been confirmed again
 tenant yet. If a tool 404s, check whether your tenant's actual path differs from what's in the
 generated spec.
 
-## Tool classification
+## Toolsets and read-only mode
 
 XSOAR's API is mostly POST-based even for reads (e.g. `searchIncidents`, `indicatorsSearch` are
-POST, not GET), so HTTP method alone can't separate read from write. Use this list to split
-`permissions.allow` / `permissions.ask` in your MCP client, the same way as any other server:
+POST, not GET), and the upstream spec has no tags, so every operation is classified by hand in
+[`src/xsoar_mcp/toolsets.py`](src/xsoar_mcp/toolsets.py) as read or write and grouped into a
+toolset. If that file and the spec disagree, the server still starts but logs a warning, and
+any operation missing from it is treated as a write tool: served only when all toolsets are
+enabled, dropped in read-only mode.
+
+Each tool carries the MCP `readOnlyHint` annotation plus tags for its toolset and `read`/`write`.
+Two env vars filter the tool set. Filtered tools are never registered, so they can't be called by
+name either:
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `XSOAR_TOOLSETS` | `all` | Comma-separated toolsets to enable, e.g. `incidents,indicators` |
+| `XSOAR_READ_ONLY` | `false` | `true` drops every write tool |
+
+| Toolset | Read | Write | Covers |
+| --- | --- | --- | --- |
+| `incidents` | 4 | 6 | Incident search, create, close, delete, export |
+| `indicators` | 5 | 6 | Indicator search, create, edit, whitelist, export |
+| `investigations` | 5 | 18 | War room entries, evidence, playbook tasks |
+| `reports` | 7 | 6 | Reports, widgets, dashboard statistics |
+| `content` | 2 | 14 | Automations, playbooks, layouts, types/fields, integrations, docker images |
+| `admin` | 1 | 1 | Audit log, API key revocation |
+
+`uv run python scripts/list_tools.py` prints exactly which tools a given combination leaves
+enabled, with their tags.
+
+### Client permission rules
+
+Read-only mode is the simplest guard. For finer control, split `permissions.allow` /
+`permissions.ask` in your MCP client with these lists (they mirror `toolsets.py`):
 
 **Read-only (24)** — safe to auto-allow:
 ```
@@ -86,8 +115,14 @@ Regenerating the spec (e.g. after Palo Alto updates the upstream API) requires N
 `PATH` (only for this step — the server itself has no Node dependency):
 
 ```bash
-uv run python scripts/fetch_spec.py
+uv run python scripts/fetch_spec.py --check   # is there an upstream update? writes nothing
+uv run python scripts/fetch_spec.py           # pull it into the package
 ```
+
+Both report which operations upstream added, removed, or moved, and whether
+`src/xsoar_mcp/toolsets.py` still classifies every operation, listing any that aren't with their
+method and path. The exit code is 1 whenever something needs doing. Once `toolsets.py` is updated, rerun the script
+(or `scripts/check_schema_safety.py`) until it's clean, then `uv tool install --reinstall .`.
 
 ## Installing it as a standalone command
 
@@ -140,5 +175,5 @@ variables in your own shell/secret manager first, then hand-edit `.mcp.json` you
 `"env": {"XSOAR_API_KEY": "${XSOAR_API_KEY}", ...}` — Claude Code expands `${VAR}` from your
 environment at startup, so the secret itself never needs to appear in any file or command.
 
-Then add the read-only tools from the **Tool classification** section above to
+Then add the read-only tools from the **Client permission rules** section above to
 `permissions.allow` and the mutating ones to `permissions.ask` (both prefixed `mcp__xsoar__`).
