@@ -21,6 +21,7 @@ from fastmcp.utilities.openapi.models import HTTPRoute
 from mcp.types import ToolAnnotations
 
 from .auth import build_http_client
+from .projection import FieldProjection
 from .toolsets import (
     CLASSIFICATION,
     TOOLSETS,
@@ -33,6 +34,17 @@ from .toolsets import (
 logger = logging.getLogger(__name__)
 
 SPEC_RESOURCE = resources.files("xsoar_mcp.openapi").joinpath("xsoar.generated.json")
+
+INSTRUCTIONS = """\
+XSOAR records are large (a single incident can be tens of KB), so keep responses small:
+- Search and list tools return a compact set of fields per record by default. Ask for more with
+  `fields` (dotted paths like "CustomFields.verdict" work); use ["*"] only for one or two records.
+- Always set a small filter.size (e.g. 10-25) on searchIncidents / indicatorsSearch, and narrow with
+  filter.query (Lucene, e.g. "status:1 and severity:>=3") or filter.period instead of paging
+  through everything.
+- To read one incident in full, search with filter.id = ["<id>"] and fields = ["*"].
+- Use filter.totalOnly = true when you only need a count.
+"""
 
 
 def build_server() -> FastMCP:
@@ -70,13 +82,16 @@ def build_server() -> FastMCP:
         # structured content that fails the advertised schema. Drop it; results are still JSON.
         component.output_schema = None
 
-    return FastMCP.from_openapi(
+    server = FastMCP.from_openapi(
         openapi_spec=spec,
         client=build_http_client(),
         name="xsoar",
         route_map_fn=route_map_fn,
         mcp_component_fn=mcp_component_fn,
+        instructions=INSTRUCTIONS,
     )
+    server.add_transform(FieldProjection())
+    return server
 
 
 def main() -> None:
