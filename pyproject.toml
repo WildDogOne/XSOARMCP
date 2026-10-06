@@ -1,6 +1,6 @@
 [project]
 name = "xsoar-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP server for Cortex XSOAR, generated from Palo Alto's own OpenAPI/Swagger spec"
 readme = "README.md"
 requires-python = ">=3.11"
