@@ -65,6 +65,10 @@ def build_server() -> FastMCP:
         toolset, is_read = classify(route)
         component.tags |= {toolset or "unclassified", "read" if is_read else "write"}
         component.annotations = ToolAnnotations(read_only_hint=is_read)
+        # The spec's response schemas don't match what XSOAR actually returns (nulls where it
+        # declares objects/arrays, numbers where it declares strings), and MCP clients reject
+        # structured content that fails the advertised schema. Drop it; results are still JSON.
+        component.output_schema = None
 
     return FastMCP.from_openapi(
         openapi_spec=spec,
