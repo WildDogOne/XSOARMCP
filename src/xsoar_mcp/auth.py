@@ -26,8 +26,8 @@ XSOAR_API_BASE_PATH = "/xsoar/public/v1"
 
 
 def _resolve_base_url(fqdn: str) -> str:
-    """Accept either a bare FQDN ("zhaw.crtx.ch.paloaltonetworks.com") or a full URL a user
-    copy-pasted from their tenant's console ("https://api-zhaw.crtx.ch.paloaltonetworks.com") -
+    """Accept either a bare FQDN ("company.crtx.ch.paloaltonetworks.com") or a full URL a user
+    copy-pasted from their tenant's console ("https://api-company.crtx.ch.paloaltonetworks.com") -
     the latter is an easy mistake since "FQDN" is ambiguous once you're staring at a URL bar, and
     silently mis-building the base URL from it produces a malformed request that's hard to
     diagnose from the resulting error alone (a proxy or the server just rejects it outright).
