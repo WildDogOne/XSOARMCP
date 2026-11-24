@@ -25,6 +25,7 @@ from .projection import FieldProjection
 from .toolsets import (
     CLASSIFICATION,
     TOOLSETS,
+    UNAVAILABLE_ON_PUBLIC_API,
     classification_drift,
     describe_drift,
     enabled_toolsets,
@@ -66,6 +67,13 @@ def build_server() -> FastMCP:
     # reads and method can't distinguish them. Excluded operations are never registered at all,
     # so read-only mode and the toolset filter also hold against calls by name.
     def route_map_fn(route: HTTPRoute, _default: MCPType) -> MCPType:
+        # Routes the public API base path does not serve (303 -> /#/404 on a live tenant) are
+        # never registered, so they neither show up in the tool list nor answer to name.
+        if route.operation_id in UNAVAILABLE_ON_PUBLIC_API:
+            logger.info(
+                "Disabling tool %s: %s", route.operation_id, UNAVAILABLE_ON_PUBLIC_API[route.operation_id]
+            )
+            return MCPType.EXCLUDE
         toolset, is_read = classify(route)
         if read_only and not is_read:
             return MCPType.EXCLUDE
