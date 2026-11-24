@@ -6,10 +6,11 @@ Two pieces are combined:
   ``scripts/fetch_spec.py``. Re-running that script overwrites this file.
 - ``playbook_overlay.json`` - a small, hand-maintained set of operations the upstream Swagger spec
   does not carry but the XSOAR 8 *public* API (``/xsoar/public/v1``) does serve, verified against a
-  live tenant: ``POST /playbook/search`` and ``GET /playbook/{playbookId}``. The upstream demisto-py
-  spec predates / omits these playbook *read* routes (it only has the ``/playbook/save/yaml`` write
-  and the running-task ``/inv-playbook/*`` ops), so they live in an overlay that is merged in at
-  build time and therefore survives regenerating ``xsoar.generated.json``.
+  live tenant: ``POST /playbook/search``, ``GET /playbook/{playbookId}`` and
+  ``GET /inv-playbook/{investigationId}``. The upstream demisto-py spec predates / omits these
+  playbook *read* routes (it only has the ``/playbook/save/yaml`` write and the running-task
+  ``/inv-playbook/task/*`` ops), so they live in an overlay that is merged in at build time and
+  therefore survives regenerating ``xsoar.generated.json``.
 
 ``load_merged`` is what the server and the dev scripts use, so the overlay operations are treated
 exactly like generated ones (classified in toolsets.py, projected, schema-checked). The merge is

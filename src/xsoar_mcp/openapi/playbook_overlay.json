@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-maintained OpenAPI operations that the XSOAR 8 public API (/xsoar/public/v1) serves but the upstream demisto-py Swagger spec does not carry. Merged into xsoar.generated.json at build time by xsoar_mcp/openapi/__init__.py:load_merged() (collision-checked). Verified against a live XSOAR 8 hosted tenant (advanced Cortex API key) on 2026-11-24: both return HTTP 200. The public API returns the parsed playbook definition (inputs/outputs/task graph), NOT the raw YAML source - there is no public YAML-export route callable with an API key.",
+  "_comment": "Hand-maintained OpenAPI operations that the XSOAR 8 public API (/xsoar/public/v1) serves but the upstream demisto-py Swagger spec does not carry. Merged into xsoar.generated.json at build time by xsoar_mcp/openapi/__init__.py:load_merged() (collision-checked). Verified against a live XSOAR 8 hosted tenant (advanced Cortex API key) on 2026-11-24: all three return HTTP 200. The public API returns the parsed playbook definition (inputs/outputs/task graph), NOT the raw YAML source - there is no public YAML-export route callable with an API key. Note that of the /inv-playbook/* family only GET /inv-playbook/{investigationId} is served publicly; the other read variants (e.g. /inv-playbook/{id}/task, /inv-playbook/{id}/context) answer 404/303.",
   "paths": {
     "/playbook/search": {
       "post": {
@@ -55,6 +55,29 @@
         "responses": {
           "200": {
             "description": "The playbook definition object."
+          }
+        }
+      }
+    },
+    "/inv-playbook/{investigationId}": {
+      "get": {
+        "operationId": "getPlaybookExecution",
+        "summary": "Get a playbook execution state",
+        "description": "Read the live execution state of the playbook run for one investigation (incident) - use it to monitor a running or finished playbook: which tasks ran, which are done/skipped/errored, and the timings. investigationId is the incident's id (the `id` or `investigationId` from searchIncidents). Returns the run's top-level state (id, playbookId, state, startTaskId, startDate, modified, netDurationMs, ...) plus a `tasks` object keyed by task id, where each entry carries its state (Completed / WillNotBeExecuted / InProgress / Waiting / Error / ...), timings, completedBy, retryCount, nextTasks (a map of branch label -> next task ids, e.g. {\"#none#\": [\"104\"]}) and the full task definition. Runs started from the tenant UI in test mode are visible here too. An unknown investigationId, or an investigation that has no playbook run, returns an empty object ({}) rather than an error - that is how 'no run' looks. Records are trimmed to a compact set of fields by default; pass fields [\"*\"] or [\"tasks\"]/[\"tasks.*\"] for the untrimmed run/tasks map, and use `tasks.`-prefixed names (e.g. \"tasks.task.name\") to choose per-task fields.",
+        "parameters": [
+          {
+            "name": "investigationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Investigation (incident) id whose playbook execution is read."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The playbook execution object: run metadata plus tasks{} keyed by task id."
           }
         }
       }

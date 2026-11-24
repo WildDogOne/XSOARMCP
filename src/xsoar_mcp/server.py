@@ -47,6 +47,10 @@ XSOAR records are large (a single incident can be tens of KB), so keep responses
 - Playbooks: call searchPlaybooks with a `query` (an empty query pulls every playbook's full task
   graph server-side - always pass a query, and cap with `size`/`page`). getPlaybookById returns one
   playbook's full task graph (tens to hundreds of KB) - fetch one at a time.
+- To follow a playbook *run*, call getPlaybookExecution with the investigation/incident id: it gives
+  the run's state plus each task's state (Completed / WillNotBeExecuted / Error / ...). Use
+  fields = ["tasks.state", "tasks.task.name"] for a quick "what is still running" answer. An empty
+  object ({}) means that investigation has no playbook run (or the id is unknown) - not an error.
 """
 
 

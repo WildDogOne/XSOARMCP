@@ -11,13 +11,18 @@ The API has no field selection of its own, so the tools listed in DEFAULT_FIELDS
 
 Records are found generically: a top-level JSON array, or any array of objects one level down
 (`data`, `iocObjects`, `scripts`, ...). Scalars beside them, like `total`, are kept as-is.
+
+One shape needs a projector of its own: `getPlaybookExecution` returns a single object rather than a
+list, and its records live in a `tasks` *map* keyed by task id. Its flat field list therefore carries
+two scopes - bare names select the run's top level, `tasks.`-prefixed names select each task entry
+(`tasks.task.name` reaches into the entry's own nested task definition).
 """
 
 # No `from __future__ import annotations`: the `fields` annotation in _wrap() closes over a
 # per-tool description, and FastMCP evaluates it at runtime to build the input schema.
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Annotated, Any
 
 from fastmcp.server.transforms import GetToolNext, Transform
@@ -50,6 +55,15 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     # searchPlaybooks returns full playbook objects (each carries its whole task graph), so trim hard.
     # Use getPlaybookById to read one definition in full.
     "searchPlaybooks": ["id", "name", "version", "packName", "modified", "sizeInBytes"],
+    # getPlaybookExecution: run metadata at the top level, then one entry per task in the tasks map.
+    # The task definition itself (task.name only) is what identifies a task; everything else about it
+    # (script, arguments, conditions) belongs to fields=["*"].
+    "getPlaybookExecution": [
+        "id", "playbookId", "state", "startTaskId", "startDate", "modified", "netDurationMs",
+        "tasks.id", "tasks.type", "tasks.state", "tasks.startDate", "tasks.completedDate",
+        "tasks.completedBy", "tasks.hasErrorEntries", "tasks.retryCount", "tasks.nextTasks",
+        "tasks.task.name",
+    ],
 }
 
 
@@ -93,7 +107,49 @@ def project(payload: Any, fields: list[str]) -> Any:
     return payload
 
 
+TASKS_KEY = "tasks"
+
+
+def project_execution(payload: Any, fields: list[str]) -> Any:
+    """Trim a playbook *execution*, which is one object whose records sit in a `tasks` map.
+
+    Bare names select the run's top level, `tasks.`-prefixed names each task entry (so
+    `tasks.task.name` reaches into the entry's nested task definition). The map is passed through
+    untrimmed when it is asked for whole - `tasks` or `tasks.*`. When no task field is selected at
+    all the `tasks` key is left out entirely rather than emitted as one empty stub per task. A run
+    that does not exist answers `{}`, which stays `{}`.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    prefix = TASKS_KEY + "."
+    root = [f for f in fields if not f.startswith(prefix)]
+    task_fields = [f[len(prefix) :] for f in fields if f.startswith(prefix)]
+    out = _project_record(payload, root)
+    if ALL in task_fields:
+        if TASKS_KEY not in out and payload.get(TASKS_KEY) is not None:
+            out[TASKS_KEY] = payload[TASKS_KEY]  # tasks.* asks for the map whole - keep it untrimmed
+        return out
+    if not task_fields:
+        return out  # nothing selected inside tasks - omit the key instead of emptying every entry
+    tasks = payload.get(TASKS_KEY)
+    if isinstance(tasks, dict):
+        out[TASKS_KEY] = {key: _project_record(t, task_fields) for key, t in tasks.items()}
+    elif _is_records(tasks):
+        out[TASKS_KEY] = [_project_record(t, task_fields) for t in tasks]
+    return out
+
+
+# Tools whose payload is not the generic "array of records, one level down" shape that project()
+# finds. Everything else uses project().
+PROJECTORS: dict[str, Callable[[Any, list[str]], Any]] = {
+    "getPlaybookExecution": project_execution,
+}
+
+
 def _wrap(tool: Tool, defaults: list[str]) -> Tool:
+    # Which trimmer to use is a property of the tool, so it is looked up here rather than passed in:
+    # most payloads are the generic "array of records" shape, PROJECTORS lists the exceptions.
+    projector = PROJECTORS.get(tool.name, project)
     fields_description = (
         'Fields to return per record; dotted paths reach nested fields (e.g. "CustomFields.verdict"). '
         f'Omit for the compact default ({", ".join(defaults)}); pass ["*"] for full records, which '
@@ -114,7 +170,7 @@ def _wrap(tool: Tool, defaults: list[str]) -> Tool:
             return result  # not JSON (e.g. an error message) - pass through untouched
         if payload is None:
             return result
-        return ToolResult(content=json.dumps(project(payload, fields or defaults)))
+        return ToolResult(content=json.dumps(projector(payload, fields or defaults)))
 
     return Tool.from_tool(
         tool,
