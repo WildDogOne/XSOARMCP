@@ -143,6 +143,22 @@ CLASSIFICATION: dict[str, tuple[str, bool]] = {
     for op_id in op_ids
 }
 
+# Operations that the bundled OpenAPI spec lists but the XSOAR Cloud *public* API
+# (/xsoar/public/v1) does not serve. They stay in TOOLSETS/CLASSIFICATION so the drift check
+# against the spec stays clean, but server.py never registers them as tools. Verified against a
+# live tenant 2026-11-24: the public base path answers these with HTTP 303 -> /#/404 (HTML),
+# i.e. route not found, even though the same call works against the private API.
+UNAVAILABLE_ON_PUBLIC_API: dict[str, str] = {
+    "searchInvestigations": (
+        "POST /investigations/search returns 303 on the public API; investigation/war-room search "
+        "is private-API only. searchIncidents covers incidents, searchEvidence covers evidence."
+    ),
+    "getIncidentsFieldsByIncidentType": (
+        "GET /incidentfields/associatedTypes/{type} returns 303 on the public API; no public "
+        "equivalent for listing an incident type's fields."
+    ),
+}
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 

@@ -7,7 +7,8 @@ The tool set is **generated, not hand-written**: `scripts/fetch_spec.py` downloa
 Swagger 2.0 spec Palo Alto publishes in the
 [demisto-py](https://github.com/demisto/demisto-py) repo (the official XSOAR Python SDK),
 converts it to OpenAPI 3.0 (FastMCP needs 3.x), and `FastMCP.from_openapi()` turns that into 75
-MCP tools. Re-running the generator picks up upstream API changes without hand-editing anything.
+operations, 73 of which become MCP tools (two routes the public API does not serve are disabled,
+see below). Re-running the generator picks up upstream API changes without hand-editing anything.
 
 XSOAR's schema uses plain, MCP-safe property names throughout — no sanitizing step needed.
 
@@ -24,6 +25,32 @@ prefix in front of what appear to be the same paths. `auth.py` already builds re
 prefixed base URL, so this should work as-is, but it hasn't been confirmed against a real XSOAR 8
 tenant yet. If a tool 404s, check whether your tenant's actual path differs from what's in the
 generated spec.
+
+## Routes not served by the public API
+
+The bundled spec is the full XSOAR API; the public gateway (`/xsoar/public/v1`, what an API key
+can reach) serves only part of it. Routes it does not serve do not 404 — the tenant answers with
+`HTTP 303` redirecting to `/#/404` with an HTML body. Verified against a live tenant (2026-11-24),
+these operations are disabled and never registered as tools (they neither appear in the tool list
+nor answer to name); see `UNAVAILABLE_ON_PUBLIC_API` in `src/xsoar_mcp/toolsets.py`:
+
+| Operation | Route | Why removed |
+| --- | --- | --- |
+| `searchInvestigations` | `POST /investigations/search` | 303 on the public API; investigation/war-room search is private-API only. `searchIncidents` covers incidents, `searchEvidence` covers evidence. |
+| `getIncidentsFieldsByIncidentType` | `GET /incidentfields/associatedTypes/{type}` | 303 on the public API; no public equivalent for listing an incident type's fields. (It also advertised the wrong argument live: an `id` where the route requires `type`.) |
+
+`GET /incident/fields` 303s as well but is not in the spec, so no tool existed for it. The HTTP
+client (`XsoarApiClient` in `auth.py`) never follows redirects: any 3xx raises
+`PublicApiRouteUnavailableError` with the status, path, and a hint that the route is not
+available on the public API, instead of surfacing a raw redirect or HTML.
+
+XSOAR also answers any POST without `Content-Type: application/json` with
+`415 unsupported_media_type` — including its read-style search endpoints, and including POSTs
+with an empty body. FastMCP's OpenAPI provider sends tools called without body arguments (e.g.
+`getAutomationScripts` with no filters) as bodyless POSTs, so `XsoarApiClient.build_request`
+gives every bodyless POST/PUT/PATCH a `json={}` body, which httpx sends as
+`Content-Type: application/json` + `{}`. Bodies that already carry a Content-Type (JSON search
+filters, multipart uploads) are left untouched.
 
 ## Toolsets and read-only mode
 
@@ -45,9 +72,9 @@ name either:
 
 | Toolset | Read | Write | Covers |
 | --- | --- | --- | --- |
-| `incidents` | 4 | 6 | Incident search, create, close, delete, export |
+| `incidents` | 3 | 6 | Incident search, create, close, delete, export |
 | `indicators` | 5 | 6 | Indicator search, create, edit, whitelist, export |
-| `investigations` | 5 | 18 | War room entries, evidence, playbook tasks |
+| `investigations` | 4 | 18 | War room entries, evidence, playbook tasks |
 | `reports` | 7 | 6 | Reports, widgets, dashboard statistics |
 | `content` | 2 | 14 | Automations, playbooks, layouts, types/fields, integrations, docker images |
 | `admin` | 1 | 1 | Audit log, API key revocation |
@@ -60,12 +87,12 @@ enabled, with their tags.
 Read-only mode is the simplest guard. For finer control, split `permissions.allow` /
 `permissions.ask` in your MCP client with these lists (they mirror `toolsets.py`):
 
-**Read-only (24)** — safe to auto-allow:
+**Read-only (22)** — safe to auto-allow:
 ```
 getAutomationScripts, getEntryArtifact, downloadFile, entryExportArtifact, searchEvidence,
-getIncidentAsCsv, getIncidentsFieldsByIncidentType, searchIncidents, indicatorsSearch,
+getIncidentAsCsv, searchIncidents, indicatorsSearch,
 getIndicatorsAsCsv, getIndicatorsAsSTIX, exportIndicatorsToStixBatch, exportIndicatorsToCsvBatch,
-exportIncidentsToCsvBatch, searchInvestigations, getAllReports, getReportByID,
+exportIncidentsToCsvBatch, getAllReports, getReportByID,
 downloadLatestReport, getAudits, getDockerImages, GetStatsForDashboard, getStatsForWidget,
 getAllWidgets, getWidget
 ```

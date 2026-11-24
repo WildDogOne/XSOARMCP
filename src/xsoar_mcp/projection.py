@@ -37,7 +37,6 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     "indicatorsSearch": [
         "id", "value", "indicator_type", "score", "firstSeen", "lastSeen", "investigationIDs",
     ],
-    "searchInvestigations": ["id", "name", "type", "status", "created", "closed", "runStatus"],
     "searchEvidence": [
         "id", "incidentId", "entryId", "description", "tags", "markedBy", "markedDate", "occurred",
     ],
@@ -47,7 +46,6 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     ],
     "getAllWidgets": ["id", "name", "description", "dataType", "widgetType", "category"],
     "getAutomationScripts": ["id", "name", "comment", "tags", "type", "enabled", "deprecated"],
-    "getIncidentsFieldsByIncidentType": ["id", "name", "cliName", "type", "description"],
     "getAudits": ["id", "modified", "user", "type", "action", "object", "identifier"],
 }
 
