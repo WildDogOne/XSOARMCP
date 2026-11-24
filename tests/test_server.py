@@ -43,6 +43,8 @@ async def test_removed_tools_cannot_be_called_by_name(mock_server):
     async with Client(server) as client:
         with pytest.raises(Exception, match="searchInvestigations"):
             await client.call_tool("searchInvestigations", {"size": 5})
+        with pytest.raises(Exception, match="getIncidentsFieldsByIncidentType"):
+            await client.call_tool("getIncidentsFieldsByIncidentType", {"type": "Incident"})
     assert transport.requests == []
 
 
