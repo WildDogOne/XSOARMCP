@@ -1,9 +1,15 @@
 """Unit tests for the shared XSOAR HTTP client (auth.build_http_client / XsoarApiClient).
 
-All tests run against httpx2.MockTransport - no live tenant or credentials needed.
+All tests run against httpx2.MockTransport - no live tenant or credentials needed - except the
+real-socket framing regression test, which talks to a local stdlib http.server.
 """
 
 from __future__ import annotations
+
+import hashlib
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx2
 import pytest
@@ -91,23 +97,129 @@ async def test_303_raises_clear_error_and_is_not_followed():
     assert len(transport.requests) == 1
 
 
-async def test_redirect_response_never_reaches_the_caller_even_if_following():
-    client, transport = make_client(
-        lambda req: httpx2.Response(302, headers={"location": "/somewhere"})
-    )
+async def test_303_without_location_header_still_reports_route_unavailable():
+    """The live tenant's 303 for unserved routes carries no Location header."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(303, text="<html>404</html>")
+
+    client, _ = make_client(handler)
+    async with client:
+        with pytest.raises(PublicApiRouteUnavailableError) as excinfo:
+            await client.post("/investigations/search", json={"size": 5})
+    assert "not available on the XSOAR public API" in str(excinfo.value)
+
+
+async def test_non_redirect_3xx_gets_generic_message_not_route_hint():
+    """A 304 is not a 'route not served' signal; the route-unavailable hint must not claim it."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(304)
+
+    client, _ = make_client(handler)
+    async with client:
+        with pytest.raises(PublicApiRouteUnavailableError) as excinfo:
+            await client.post("/x", json={})
+    message = str(excinfo.value)
+    assert "304" in message
+    assert "not available on the XSOAR public API" not in message
+
+
+async def test_follow_redirects_true_is_still_not_followed():
+    """The client forces follow_redirects=False even when the caller asks for redirects."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(302, headers={"location": "/somewhere"})
+
+    client, transport = make_client(handler)
     async with client:
         with pytest.raises(PublicApiRouteUnavailableError):
-            await client.post("/any/route", json={})
+            await client.post("/any/route", json={}, follow_redirects=True)
+    assert len(transport.requests) == 1
 
 
 async def test_advanced_auth_headers_are_still_signed_per_request():
+    """The advanced-key signature must be exactly sha256(api_key + nonce + timestamp), and
+    signing must also apply to requests whose body was injected by build_request."""
     client, transport = make_client(lambda req: httpx2.Response(200, json={}))
     async with client:
         await client.post("/x", json={})
-        await client.post("/x", json={})
-    first, second = transport.requests
-    for request in (first, second):
-        assert request.headers["authorization"]
-        assert request.headers["x-xdr-nonce"]
-        assert request.headers["x-xdr-timestamp"]
-    assert first.headers["x-xdr-nonce"] != second.headers["x-xdr-nonce"]
+        await client.post("/x")  # bodyless: the injected-body path
+    api_key = os.environ["XSOAR_API_KEY"]
+    for request in transport.requests:
+        nonce = request.headers["x-xdr-nonce"]
+        timestamp = request.headers["x-xdr-timestamp"]
+        expected = hashlib.sha256(f"{api_key}{nonce}{timestamp}".encode("utf-8")).hexdigest()
+        assert request.headers["authorization"] == expected
+        assert request.headers["x-xdr-auth-id"] == os.environ["XSOAR_API_KEY_ID"]
+    assert (
+        transport.requests[0].headers["x-xdr-nonce"] != transport.requests[1].headers["x-xdr-nonce"]
+    )
+
+
+async def test_injected_body_clears_stale_content_length_from_fastmcp_headers():
+    """Regression for the FastMCP request path (openapi/components.py:207).
+
+    FastMCP rebuilds requests with headers=list(directed_request.headers.raw), which already
+    carries 'content-length: 0' for a bodyless directed request. Without stripping it, the
+    injected b'{}' body goes out under Content-Length: 0 and h11 aborts the connection with
+    'Too much data for declared Content-Length'.
+    """
+    client, transport = make_client(lambda req: httpx2.Response(200, json={}))
+    async with client:
+        # Exactly the kwargs FastMCP's OpenAPI tool passes for a no-arg search tool.
+        request = client.build_request(
+            "POST",
+            "/automation/search",
+            params=None,
+            headers=[(b"content-length", b"0"), (b"accept", b"*/*")],
+            content=b"",
+        )
+        assert request.headers["content-type"] == "application/json"
+        assert request.content == b"{}"
+        assert request.headers["content-length"] == str(len(request.content))
+        await client.send(request)
+    sent = transport.requests[0]
+    assert sent.headers["content-length"] == "2"
+    assert sent.content == b"{}"
+
+
+async def test_injected_body_arrives_over_a_real_socket():
+    """MockTransport never enforces HTTP framing, so prove framing against a real socket."""
+
+    received: dict = {}
+
+    class EchoHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("content-length", 0))
+            received["body"] = self.rfile.read(length)
+            received["content_type"] = self.headers.get("content-type")
+            payload = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args) -> None:  # keep pytest output clean
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EchoHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = XsoarApiClient(base_url=f"http://127.0.0.1:{server.server_port}/xsoar/public/v1")
+        async with client:
+            request = client.build_request(
+                "POST",
+                "/automation/search",
+                headers=[(b"content-length", b"0")],  # stale header from FastMCP's rebuild
+                content=b"",
+            )
+            response = await client.send(request)
+        assert response.status_code == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert received["body"] == b"{}"
+    assert received["content_type"] == "application/json"

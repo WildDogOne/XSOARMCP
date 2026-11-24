@@ -48,14 +48,23 @@ class PublicApiRouteUnavailableError(RuntimeError):
 def _has_content_type(headers) -> bool:
     if not headers:
         return False
-    if isinstance(headers, dict):
-        names = headers.keys()
-    else:
-        names = [entry[0] for entry in headers]
-    return any(
-        (name.decode("ascii") if isinstance(name, bytes) else name).lower() == "content-type"
-        for name in names
-    )
+    # httpx2.Headers (and any Mapping) must go through the Headers constructor: iterating one
+    # yields bare key strings, and entry[0] would then take the first *character* of each key
+    # and never match "content-type".
+    return "content-type" in httpx2.Headers(headers)
+
+
+def _strip_body_framing(headers) -> list[tuple[bytes, bytes]]:
+    """Drop content-length/transfer-encoding from a header list so httpx recomputes framing.
+
+    FastMCP's OpenAPI provider rebuilds requests with headers=list(directed.headers.raw), and
+    a bodyless directed request already carries "content-length: 0" there. Injecting a body
+    without dropping that stale header sends Content-Length: 0 with a non-empty body, which
+    h11 aborts over a real socket ("Too much data for declared Content-Length").
+    """
+    framing = ("content-length", "transfer-encoding")
+    normalized = httpx2.Headers(headers)
+    return [(name, value) for name, value in normalized.raw if name.decode("ascii").lower() not in framing]
 
 
 class XsoarApiClient(httpx2.AsyncClient):
@@ -63,7 +72,9 @@ class XsoarApiClient(httpx2.AsyncClient):
 
     - build_request: POST/PUT/PATCH built without any body and without a Content-Type get
       `json={}` instead, so FastMCP's bodyless search POSTs (tools called with no body
-      arguments) don't come back as 415 unsupported_media_type.
+      arguments) don't come back as 415 unsupported_media_type. Any pre-set body-framing
+      headers (Content-Length: 0 from FastMCP's directed request) are dropped so httpx
+      recomputes them for the injected body.
     - send: never follows redirects. On the public API a redirect always means "route not
       served here" (303 -> /#/404 with an HTML body), so it raises a clear error instead.
     """
@@ -77,20 +88,30 @@ class XsoarApiClient(httpx2.AsyncClient):
             if bodyless and not _has_content_type(kwargs.get("headers")):
                 kwargs.pop("content", None)
                 kwargs["json"] = {}  # httpx then sends Content-Type: application/json + b"{}"
+                if kwargs.get("headers"):
+                    kwargs["headers"] = _strip_body_framing(kwargs["headers"])
         return super().build_request(method, url, **kwargs)
 
     async def send(self, request, *args, **kwargs):
         kwargs["follow_redirects"] = False
         response = await super().send(request, *args, **kwargs)
         if 300 <= response.status_code < 400:
-            location = response.headers.get("location", "")
+            await response.aclose()  # don't leak the stream when stream=True was requested
+            path = request.url.raw_path.decode("ascii", "replace").split("?")[0]
+            # Key off the status, not Response.is_redirect: httpx's is_redirect requires a
+            # Location header, and the live tenant's 303 for unserved routes sends none.
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("location", "")
+                raise PublicApiRouteUnavailableError(
+                    f"HTTP {response.status_code} redirect from {request.method} {path} "
+                    f"(-> {location or 'no Location header'}): this route is not available on the "
+                    f"XSOAR public API ({XSOAR_API_BASE_PATH}). The bundled OpenAPI spec covers "
+                    "the full XSOAR API; routes like this are private-API only and are not "
+                    "callable with an API key."
+                )
             raise PublicApiRouteUnavailableError(
-                f"HTTP {response.status_code} redirect from {request.method} "
-                f"{request.url.raw_path.decode('ascii', 'replace').split('?')[0]} "
-                f"(-> {location or 'no Location header'}): this route is not available on the "
-                f"XSOAR public API ({XSOAR_API_BASE_PATH}). The bundled OpenAPI spec covers the "
-                "full XSOAR API; routes like this are private-API only and are not callable with "
-                "an API key."
+                f"HTTP {response.status_code} (non-redirect 3xx) from {request.method} {path} "
+                f"on the XSOAR public API ({XSOAR_API_BASE_PATH}); the request was not retried."
             )
         return response
 

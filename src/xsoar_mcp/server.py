@@ -71,7 +71,9 @@ def build_server() -> FastMCP:
         # never registered, so they neither show up in the tool list nor answer to name.
         if route.operation_id in UNAVAILABLE_ON_PUBLIC_API:
             logger.info(
-                "Disabling tool %s: %s", route.operation_id, UNAVAILABLE_ON_PUBLIC_API[route.operation_id]
+                "Disabling tool %s: %s",
+                route.operation_id,
+                UNAVAILABLE_ON_PUBLIC_API[route.operation_id],
             )
             return MCPType.EXCLUDE
         toolset, is_read = classify(route)
