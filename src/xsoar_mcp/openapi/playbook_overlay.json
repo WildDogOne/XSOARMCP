@@ -1,0 +1,63 @@
+{
+  "_comment": "Hand-maintained OpenAPI operations that the XSOAR 8 public API (/xsoar/public/v1) serves but the upstream demisto-py Swagger spec does not carry. Merged into xsoar.generated.json at build time by xsoar_mcp/openapi/__init__.py:load_merged() (collision-checked). Verified against a live XSOAR 8 hosted tenant (advanced Cortex API key) on 2026-11-24: both return HTTP 200. The public API returns the parsed playbook definition (inputs/outputs/task graph), NOT the raw YAML source - there is no public YAML-export route callable with an API key.",
+  "paths": {
+    "/playbook/search": {
+      "post": {
+        "operationId": "searchPlaybooks",
+        "summary": "Search playbooks",
+        "description": "Search the playbooks installed in the tenant by name substring / free-text query. Returns matching playbooks (id, name, version, packName, ...); pass the returned id to getPlaybookById to read the full definition. Always pass a query: an empty query returns every playbook and each match carries its FULL task graph server-side (hundreds of KB before trimming). The API honours size and page, so cap a broad search with size (and page) rather than pulling everything. Records are trimmed to a compact set of fields by default.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Name substring / free-text filter to match playbooks against. Prefer a query; omitting it (or \"\") returns all playbooks."
+                  },
+                  "size": {
+                    "type": "integer",
+                    "description": "Maximum number of playbooks to return. The API honours it; use it to cap a broad or empty query."
+                  },
+                  "page": {
+                    "type": "integer",
+                    "description": "Zero-based page index, used together with size for paging."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "playbookSearchResult: {playbooks: [...], tags: [...], total: N}"
+          }
+        }
+      }
+    },
+    "/playbook/{playbookId}": {
+      "get": {
+        "operationId": "getPlaybookById",
+        "summary": "Get a playbook by ID",
+        "description": "Fetch one playbook's full definition by its playbook ID - the id returned by searchPlaybooks. For some playbooks the id equals the display name; for others it is a UUID, so resolve the id with searchPlaybooks first. Returns the parsed definition: inputs, outputs and the full task graph, which can be tens to hundreds of KB - fetch one playbook at a time. The public API does not expose the raw playbook YAML source; this is the structured definition.",
+        "parameters": [
+          {
+            "name": "playbookId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Playbook ID (from searchPlaybooks)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The playbook definition object."
+          }
+        }
+      }
+    }
+  }
+}

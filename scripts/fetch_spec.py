@@ -30,6 +30,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from xsoar_mcp.openapi import OverlayCollisionError, load_overlay, merge
 from xsoar_mcp.toolsets import classification_drift, describe_drift
 
 SOURCE_URL = "https://raw.githubusercontent.com/demisto/demisto-py/master/server_api_swagger.json"
@@ -129,11 +130,24 @@ def main() -> None:
         print(f"\nWrote {OUTPUT_PATH} - {n_paths} paths.", file=sys.stderr)
 
     print("\ntoolsets.py:", file=sys.stderr)
-    unclassified, stale = classification_drift(openapi3_spec)
+    # The drift check must see the merged spec (generated + playbook overlay), otherwise the
+    # overlay-only operations classified in toolsets.py would be reported as stale. A collision
+    # (upstream now carries a route the overlay also defines) is a warning here, not a crash: the
+    # freshly fetched spec already contains that route, so the drift check still sees it.
+    merged_spec = json.loads(json.dumps(openapi3_spec))
+    try:
+        merge(merged_spec, load_overlay())
+    except OverlayCollisionError as exc:
+        print(
+            f"  WARNING: {exc} - the upstream spec now carries a route the overlay also defines; "
+            "remove it from playbook_overlay.json.",
+            file=sys.stderr,
+        )
+    unclassified, stale = classification_drift(merged_spec)
     if unclassified or stale:
         print(f"  {describe_drift(unclassified, stale)}", file=sys.stderr)
         if unclassified:
-            new_ops = operations(openapi3_spec)
+            new_ops = operations(merged_spec)
             print("  Classify these in toolsets.py:", file=sys.stderr)
             for op_id in unclassified:
                 print(f"    {op_id} ({' '.join(new_ops[op_id])})", file=sys.stderr)

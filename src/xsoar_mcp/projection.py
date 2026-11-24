@@ -47,6 +47,9 @@ DEFAULT_FIELDS: dict[str, list[str]] = {
     "getAllWidgets": ["id", "name", "description", "dataType", "widgetType", "category"],
     "getAutomationScripts": ["id", "name", "comment", "tags", "type", "enabled", "deprecated"],
     "getAudits": ["id", "modified", "user", "type", "action", "object", "identifier"],
+    # searchPlaybooks returns full playbook objects (each carries its whole task graph), so trim hard.
+    # Use getPlaybookById to read one definition in full.
+    "searchPlaybooks": ["id", "name", "version", "packName", "modified", "sizeInBytes"],
 }
 
 

@@ -6,25 +6,32 @@ MCP server for Cortex XSOAR — generated from Palo Alto's own OpenAPI/Swagger s
 The tool set is **generated, not hand-written**: `scripts/fetch_spec.py` downloads the official
 Swagger 2.0 spec Palo Alto publishes in the
 [demisto-py](https://github.com/demisto/demisto-py) repo (the official XSOAR Python SDK),
-converts it to OpenAPI 3.0 (FastMCP needs 3.x), and `FastMCP.from_openapi()` turns that into 75
-operations, 73 of which become MCP tools (two routes the public API does not serve are disabled,
-see below). Re-running the generator picks up upstream API changes without hand-editing anything.
+converts it to OpenAPI 3.0 (FastMCP needs 3.x), and `FastMCP.from_openapi()` turns that — merged
+with a small hand-maintained overlay of XSOAR 8 public-API-only routes the upstream spec omits
+(see [Playbook routes](#playbook-routes-added-via-overlay)) — into 77 operations, 75 of which
+become MCP tools (two routes the public API does not serve are disabled, see below). Re-running
+the generator picks up upstream API changes without dropping the overlay.
 
 XSOAR's schema uses plain, MCP-safe property names throughout — no sanitizing step needed.
 
 ## Endpoint coverage and a caveat
 
 The spec covers incidents, indicators, investigations/playbook tasks, evidence, reports,
-automations/scripts, widgets, and content — 72 REST paths, 75 operations (a few paths have
-multiple methods).
+automations/scripts, widgets, and content — 74 REST paths, 77 operations (a few paths have
+multiple methods). 72 paths / 75 operations come from the generated spec; the other 2 paths
+(`POST /playbook/search`, `GET /playbook/{playbookId}`) come from the overlay described under
+[Playbook routes](#playbook-routes-added-via-overlay).
 
-**Not yet empirically verified**: this spec's paths (`/incident`, `/incidents/search`, etc.) look
-like the on-prem/classic XSOAR API surface. Palo Alto's XSOAR 8 / Cortex Cloud docs describe the
-actual base URL as `https://api-{fqdn}/xsoar/public/v1/{endpoint_path}/` — a versioned gateway
-prefix in front of what appear to be the same paths. `auth.py` already builds requests against that
-prefixed base URL, so this should work as-is, but it hasn't been confirmed against a real XSOAR 8
-tenant yet. If a tool 404s, check whether your tenant's actual path differs from what's in the
-generated spec.
+**Verified against a live XSOAR 8 hosted tenant (2026-11-24)**: the spec's classic paths
+(`/automation/search`, etc.) do work behind the versioned gateway prefix
+`https://api-{fqdn}/xsoar/public/v1/{endpoint_path}` that `auth.py` builds — those calls return
+`200` with the Advanced Cortex API key. Two different kinds of path are *not* served by the public
+gateway and answer `HTTP 303` rather than `404`: routes that **are** in the bundled spec but the
+gateway doesn't serve (e.g. `searchInvestigations` — tracked in `UNAVAILABLE_ON_PUBLIC_API`, see the
+next section), and private/UI-only endpoints that are **not** spec routes at all (e.g. the tenant
+front-end's `/automation/playbook/*` playbook search — there is no tool for those, and they were
+never candidates for `UNAVAILABLE_ON_PUBLIC_API`). If a tool 404s on your tenant, check whether its
+path differs from what's in the generated spec.
 
 ## Routes not served by the public API
 
@@ -52,6 +59,32 @@ gives every bodyless POST/PUT/PATCH a `json={}` body, which httpx sends as
 `Content-Type: application/json` + `{}`. Bodies that already carry a Content-Type (JSON search
 filters, multipart uploads) are left untouched.
 
+## Playbook routes (added via overlay)
+
+The upstream demisto-py Swagger spec carries **no playbook *read* route** — only the
+`/playbook/save/yaml` write (`importPlaybook`) and the running-task `/inv-playbook/task/*` ops. So
+the generated spec has no way to list playbooks or read a playbook's definition, even though the
+XSOAR 8 *public* API does serve them.
+
+Verified against a live XSOAR 8 hosted tenant (2026-11-24) with an Advanced Cortex API key:
+
+| Route | Result with an API key |
+| --- | --- |
+| `POST /xsoar/public/v1/playbook/search` | **200** — `{playbooks: [...], tags: [...], total: N}`; body `{"query": "<name filter>", "size": N, "page": N}` (the API honours `size`/`page`; an empty query returns every playbook, each carrying its full task graph) |
+| `GET /xsoar/public/v1/playbook/{playbookId}` | **200** — the playbook definition (`inputs`, `outputs`, full `tasks` graph, tens–hundreds of KB); `playbookId` is the `id` from search (sometimes the display name, sometimes a UUID) |
+| `POST /xsoar/public/v1/automation/playbook/search` | `303` — this is the **private/UI** route, not callable with an API key |
+
+These two public routes are added in `src/xsoar_mcp/openapi/playbook_overlay.json`, merged into the
+generated spec at build time by `xsoar_mcp/openapi/__init__.py:load_merged()`, so they survive
+`fetch_spec.py` regenerating `xsoar.generated.json`. They are exposed as the read tools
+**`searchPlaybooks`** and **`getPlaybookById`** (toolset `content`), and `searchPlaybooks` is
+projected down to a compact field set because each playbook object carries its whole task graph.
+
+**Caveat — no raw YAML.** The public API returns the *parsed* playbook definition (the task graph),
+not the playbook's YAML source. There is no public route that hands back the YAML text with an API
+key (the UI gets it from private routes). For reviewing what a playbook does, the task graph is
+complete; for the literal YAML, export from the tenant UI.
+
 ## Toolsets and read-only mode
 
 XSOAR's API is mostly POST-based even for reads (e.g. `searchIncidents`, `indicatorsSearch` are
@@ -76,7 +109,7 @@ name either:
 | `indicators` | 5 | 6 | Indicator search, create, edit, whitelist, export |
 | `investigations` | 4 | 18 | War room entries, evidence, playbook tasks |
 | `reports` | 7 | 6 | Reports, widgets, dashboard statistics |
-| `content` | 2 | 14 | Automations, playbooks, layouts, types/fields, integrations, docker images |
+| `content` | 4 | 14 | Automations, playbooks (search + get definition), layouts, types/fields, integrations, docker images |
 | `admin` | 1 | 1 | Audit log, API key revocation |
 
 `uv run python scripts/list_tools.py` prints exactly which tools a given combination leaves
@@ -87,14 +120,14 @@ enabled, with their tags.
 Read-only mode is the simplest guard. For finer control, split `permissions.allow` /
 `permissions.ask` in your MCP client with these lists (they mirror `toolsets.py`):
 
-**Read-only (22)** — safe to auto-allow:
+**Read-only (24)** — safe to auto-allow:
 ```
 getAutomationScripts, getEntryArtifact, downloadFile, entryExportArtifact, searchEvidence,
 getIncidentAsCsv, searchIncidents, indicatorsSearch,
 getIndicatorsAsCsv, getIndicatorsAsSTIX, exportIndicatorsToStixBatch, exportIndicatorsToCsvBatch,
 exportIncidentsToCsvBatch, getAllReports, getReportByID,
 downloadLatestReport, getAudits, getDockerImages, GetStatsForDashboard, getStatsForWidget,
-getAllWidgets, getWidget
+getAllWidgets, getWidget, searchPlaybooks, getPlaybookById
 ```
 
 **Mutating (51)** — creates/updates/deletes/imports/uploads/executes something, should prompt:

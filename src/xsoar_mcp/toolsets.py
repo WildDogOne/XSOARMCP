@@ -13,6 +13,10 @@ called by name either, not just hidden from the listing):
 
 - XSOAR_TOOLSETS: comma-separated toolset names, or "all" (the default).
 - XSOAR_READ_ONLY: "true" drops every write tool, regardless of toolset.
+
+The drift check runs against the *merged* spec (generated + openapi/playbook_overlay.json), so the
+overlay-only operations (searchPlaybooks, getPlaybookById) must be classified here too even though
+they are not in xsoar.generated.json.
 """
 
 from __future__ import annotations
@@ -107,6 +111,8 @@ TOOLSETS: dict[str, dict[str, list[str]]] = {
         "read": [
             "getAutomationScripts",
             "getDockerImages",
+            "searchPlaybooks",
+            "getPlaybookById",
         ],
         "write": [
             "saveOrUpdateScript",

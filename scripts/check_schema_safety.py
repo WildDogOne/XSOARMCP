@@ -1,11 +1,11 @@
 """Dev helper: verify every generated tool's schema only uses MCP-safe property names, and that
 every spec operation is classified in toolsets.py."""
 import asyncio
-import json
 import re
 import sys
 
-from xsoar_mcp.server import SPEC_RESOURCE, build_server
+from xsoar_mcp.openapi import load_merged
+from xsoar_mcp.server import build_server
 from xsoar_mcp.toolsets import classification_drift, describe_drift
 
 SAFE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
@@ -25,7 +25,7 @@ async def main() -> None:
     print()
     print("ALL SAFE" if all_ok else "SOME TOOLS STILL HAVE INVALID PROPERTY NAMES")
 
-    unclassified, stale = classification_drift(json.loads(SPEC_RESOURCE.read_text()))
+    unclassified, stale = classification_drift(load_merged())
     if unclassified or stale:
         print(describe_drift(unclassified, stale))
     else:
