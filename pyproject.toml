@@ -9,6 +9,11 @@ dependencies = [
     "httpx2",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    # Security floor: dnspython is transitive (fastmcp -> pydantic[email] ->
+    # email-validator, which only requires dnspython>=2.0.0). Pin the patched
+    # version so a fresh resolve that ignores uv.lock (e.g. `uv tool install .`)
+    # can't reintroduce the pre-2.9.2 advisories.
+    "dnspython>=2.9.2",
 ]
 
 [project.optional-dependencies]
